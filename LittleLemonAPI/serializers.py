@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from rest_framework.validators import UniqueTogetherValidator, UniqueValidator
-from .models import MenuItem, Category
+from .models import MenuItem, Category, Cart
 from django.contrib.auth.models import User, Group
 
 
@@ -18,6 +18,25 @@ class MenuItemsSerializer(serializers.ModelSerializer):
 
         extra_kwargs = {
             'price': {'min_value': 0}
+        }
+
+class CartItemsSerializer(serializers.ModelSerializer):
+    
+    # category = serializers.StringRelatedField()
+
+    class Meta:
+        model = Cart
+        fields = ['id', 'user', 'menuitem', 'quantity', 'unit_price', 'price']
+
+        validators = [
+            UniqueTogetherValidator(
+                queryset=Cart.objects.all(),
+                fields=['user', 'menuitem']
+            )
+        ]
+
+        extra_kwargs = {
+            'quantity': {'min_value': 1}
         }
 
 class SingleMenuItemSerializer(serializers.ModelSerializer):
@@ -38,4 +57,4 @@ class GroupsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = '__all__'
+        fields = ['id', 'email', 'username', 'groups']

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from rest_framework.validators import UniqueTogetherValidator, UniqueValidator
-from .models import MenuItem, Category, Cart
+from .models import MenuItem, Category, Cart, Order, OrderItem
 from django.contrib.auth.models import User, Group
 
 
@@ -21,9 +21,7 @@ class MenuItemsSerializer(serializers.ModelSerializer):
         }
 
 class CartItemsSerializer(serializers.ModelSerializer):
-    
-    # category = serializers.StringRelatedField()
-
+   
     class Meta:
         model = Cart
         fields = ['id', 'user', 'menuitem', 'quantity', 'unit_price', 'price']
@@ -38,6 +36,40 @@ class CartItemsSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'quantity': {'min_value': 1}
         }
+
+
+class OrderItemsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderItem
+        fields = ['id', 'order', 'menuitem', 'quantity', 'unit_price', 'price']
+
+        validators = [
+            UniqueTogetherValidator(
+                queryset=OrderItem.objects.all(),
+                fields=['order', 'menuitem']
+            )
+        ]
+
+        extra_kwargs = {
+            'quantity': {'min_value': 1}
+        }
+
+
+class OrdersSerializer(serializers.ModelSerializer):
+  
+    order_items = OrderItemsSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Order
+        fields = ['id', 'user', 'delivery_crew', 'status', 'total', 'date', 'order_items']
+
+        validators = [
+            UniqueTogetherValidator(
+                queryset=Order.objects.all(),
+                fields=['user', 'date']
+            )
+        ]
+
 
 class SingleMenuItemSerializer(serializers.ModelSerializer):
     

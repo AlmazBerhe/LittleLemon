@@ -3,9 +3,10 @@ from rest_framework.response import Response
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from .models import MenuItem, Category, Cart, Order, OrderItem
-from .serializers import MenuItemsSerializer, CategorySerializer, SingleMenuItemSerializer, GroupsSerializer, CartItemsSerializer
+from .serializers import MenuItemsSerializer, CategorySerializer, SingleMenuItemSerializer, GroupsSerializer, CartItemsSerializer, OrdersSerializer, OrderItemsSerializer
 from django.contrib.auth.models import User, Group
 from django.shortcuts import get_object_or_404
+from datetime import datetime
 
 class CategoriesView(generics.ListCreateAPIView):
     queryset = Category.objects.all()
@@ -200,3 +201,192 @@ class DeliveryCrewsView(generics.ListCreateAPIView):
         return Response({"message": "user removed from group"}, status=status.HTTP_200_OK)
 
     
+class OrderItemsView(generics.ListAPIView):
+    
+    serializer_class = OrderItemsSerializer
+
+    def IsManagerOrIsAdmin(self):
+        return self.request.user.groups.filter(name="Manager").exists() or self.request.user.is_staff
+
+    def get(self, request):
+        
+        user = self.request.user
+
+        if self.IsManagerOrIsAdmin():
+            orders = Order.objects.all()
+        elif self.request.user.groups.filter(name="DeliveryCrew").exists():
+            orders = Order.objects.filter(delivery_crew=user.id)
+        else:
+            orders = Order.objects.filter(user=user)
+   
+        if not orders:
+            return Response(Order.objects.none(), status=status.HTTP_200_OK)
+       
+        serializer = OrdersSerializer(orders, many=True)
+        
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+
+    def post(self, request):
+
+        user = self.request.user
+        cart = Cart.objects.filter(user=user)
+
+        # Todo - this is not working
+        total = 0
+        [(total + item.price) for item in cart]
+
+        if not cart:
+            return Response({"message": "Resources not found"}, status=status.HTTP_404_NOT_FOUND)
+        
+        order = Order(
+            user=user,
+            total=total,
+            date=datetime.now()
+        )
+
+        order.save()
+
+        for item in cart:
+            orderItem = OrderItem(
+                order=order,
+                menuitem=item.menuitem,
+                quantity=item.quantity,
+                unit_price=item.unit_price,
+                price=item.price
+            )
+            orderItem.save()
+
+        cart.delete()
+
+        return Response({"message": "Order created"}, status=status.HTTP_200_OK)
+    
+
+class SingleOrderView(generics.RetrieveUpdateDestroyAPIView):
+
+    # serializer_class = OrdersSerializer
+    def IsManagerOrIsAdmin(self):
+        return self.request.user.groups.filter(name="Manager").exists() or self.request.user.is_staff
+        
+
+    def get(self, request, orderId):
+
+        user = request.user
+
+        order = get_object_or_404(Order.objects.filter(id=orderId, user=user))
+
+        # if not order:
+        #     return Response({"message": "Resources not found"}, status=status.HTTP_404_NOT_FOUND)
+        
+        serialzer = OrdersSerializer(order)
+
+        return Response(serialzer.data, status=status.HTTP_200_OK)
+    
+
+    def put(self, request, orderId):
+
+    
+        if self.IsManagerOrIsAdmin():
+
+            order = get_object_or_404(Order.objects.filter(id=orderId))
+
+            order_status = request.data.get('status')
+            delivery_crew_id = request.data.get('delivery_crew_id')
+
+            delivery_group_id = Group.objects.filter(name="DeliveryCrew").first()
+            delivery_crew = User.objects.filter(id=delivery_crew_id, groups=delivery_group_id).first()
+
+            if not (order_status or delivery_crew):
+                return Response({"message": "Missing fields"}, status=status.HTTP_400_BAD_REQUEST)
+
+            if order_status:
+                order.status = order_status
+
+            if delivery_crew:
+                order.delivery_crew = delivery_crew
+            
+            order.save()
+
+            return Response({"message": "Status updated"}, status=status.HTTP_200_OK)
+        
+
+        # Todo - this is not working
+        # customer update order
+
+        order = get_object_or_404(Order.objects.filter(id=orderId, user=request.user))
+
+        menuitems = MenuItem.objects.filter(order=order)
+
+        menuitems.delete()
+
+        menuitems = request.data.get('menuitems')  # what datatype should this accept? dict of menuitemid and quantity?
+
+        for item in menuitems:
+            order_item = OrderItem(
+                order=order,
+                menuitem=item.menuitem,
+                quantity=item.quantity,
+                unit_price=item.price,
+                price=(item.price * item.quantity)
+            )
+
+            order_item.save()
+
+        return Response({"message": "Order updated"}, status=status.HTTP_200_OK)
+
+
+    def patch(self, request, orderId):
+        
+        if self.IsManagerOrIsAdmin() or request.user.groups.filter(name="DeliveryCrew").exists():
+            order_status = request.data.get('status')
+
+            if not order_status:
+                return Response({"message": "Missing fields"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            order = get_object_or_404(Order.objects.get(id=orderId))
+
+            order.status = order_status
+            order.save()
+
+            return Response({"message": "Order updated."}, status=status.HTTP_200_OK)
+        
+        # Todo - this is not working
+        # customer update order
+
+        order = get_object_or_404(Order.objects.filter(id=orderId, user=request.user))
+
+        menuitems = MenuItem.objects.filter(order=order)
+
+        menuitems.delete()
+
+        menuitems = request.data.get('menuitems')  # what datatype should this accept? dict of menuitemid and quantity?
+
+        for item in menuitems:
+            order_item = OrderItem(
+                order=order,
+                menuitem=item.menuitem,
+                quantity=item.quantity,
+                unit_price=item.price,
+                price=(item.price * item.quantity)
+            )
+
+            order_item.save()
+
+        return Response({"message": "Order updated"}, status=status.HTTP_200_OK)
+
+
+    
+    def delete(self, request, orderId):
+
+        if self.IsManagerOrIsAdmin():
+            order = get_object_or_404(Order.objects.filter(id=orderId))
+
+            order.delete()
+
+            return Response({"message": "Order deleted."}, status=status.HTTP_200_OK)
+        
+
+        return Response({"message": "You are not authorized to perform this action"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        
+

@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'LittleLemonAPI',
+    'debug_toolbar',
     'djoser',
 ]
 
@@ -51,6 +52,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'debug_toolbar.middleware.DebugToolbarMiddleware',
 ]
 
 ROOT_URLCONF = 'LittleLemon.urls'
@@ -143,4 +145,9 @@ REST_FRAMEWORK = {
 
 DJOSER = {
     "USER_ID_FIELD": "username"
+    # "LOGIN_FIELD": "username"
 }
+
+INTERNAL_IPS = [
+    '127.0.0.1'
+]

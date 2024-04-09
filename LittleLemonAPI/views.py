@@ -1,12 +1,22 @@
+from django.forms import ValidationError
 from django.shortcuts import render
 from rest_framework.response import Response
 from rest_framework import generics, status
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, BasePermission
 from .models import MenuItem, Category, Cart, Order, OrderItem
-from .serializers import MenuItemsSerializer, CategorySerializer, SingleMenuItemSerializer, GroupsSerializer, CartItemsSerializer, OrdersSerializer, OrderItemsSerializer
+from .serializers import MenuItemsSerializer, CategorySerializer, SingleMenuItemSerializer, GroupsSerializer, CartItemsSerializer, OrdersSerializer, OrderItemsSerializer, OrderMenuItemSerializer
 from django.contrib.auth.models import User, Group
 from django.shortcuts import get_object_or_404
 from datetime import datetime
+from django.core.paginator import Paginator, EmptyPage
+from rest_framework.throttling import UserRateThrottle
+from decimal import Decimal
+
+
+class IsManagerOrIsAdmin(BasePermission):
+    
+    def has_permission(self, request, view):
+        return request.user.groups.filter(name="Manager").exists() or request.user.is_staff 
 
 class CategoriesView(generics.ListCreateAPIView):
     queryset = Category.objects.all()
@@ -14,18 +24,58 @@ class CategoriesView(generics.ListCreateAPIView):
 
 
 class MenuItemsView(generics.ListCreateAPIView):
+    throttle_classes = [UserRateThrottle]
     queryset = MenuItem.objects.all()
     serializer_class = MenuItemsSerializer
+
+    def get(self, request):
+        items = MenuItem.objects.select_related('category').all()
+
+        category_name = request.data.get('category')
+        min_price = request.data.get('price_from')
+        max_price = request.data.get('price_to')
+        ordering = request.data.get('ordering')
+        per_page = request.data.get('per_page', len(items))
+        page = request.data.get('page', 1)
+
+        if category_name:
+            items = items.filter(category__title__icontains=category_name)
+
+        if min_price:
+            items = items.filter(price__gte=min_price)
+
+        if max_price:
+            items = items.filter(price__lte=max_price)
+
+        if ordering:
+            ordering_fields = ordering.split(",")
+            items = items.order_by(*ordering_fields)
+
+        paginator = Paginator(items, per_page=per_page)
+        try:
+            items = paginator.page(number=page)
+        except EmptyPage:
+            items = []
+
+        serializer = MenuItemsSerializer(items, many=True)
+
+        return Response(serializer.data, status=status.HTTP_200_OK)   
+    
+    # def patch(self, request, menuitemId):
+        
+    
+    # def IsManagerOrIsAdmin(self):
+    #     return self.request.user.groups.filter(name="Manager").exists() or self.request.user.is_staff
 
     def get_permissions(self):
         if self.request.method == 'GET':
             return [IsAuthenticated()]
            
-        return [IsAdminUser()]
+        return [IsManagerOrIsAdmin()]
     
 
 class CartMenuItemsView(generics.ListCreateAPIView):
-    
+    throttle_classes = [UserRateThrottle]
     serializer_class = CartItemsSerializer
 
     def get_queryset(self):
@@ -40,14 +90,14 @@ class CartMenuItemsView(generics.ListCreateAPIView):
         menuitemId = self.request.data.get('menuitemId')
 
         if not menuitemId:
-            return Response({"method": "Bad Request. Fields missing"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Fields missing"}, status=status.HTTP_400_BAD_REQUEST)
         
         quantity = int(self.request.data.get('quantity', 1))
 
         menuItem = MenuItem.objects.get(id=menuitemId)
 
         if not menuItem:
-            return Response({"method": "Resource not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Resource not found"}, status=status.HTTP_404_NOT_FOUND)
         
         user = self.request.user
 
@@ -81,6 +131,7 @@ class CartMenuItemsView(generics.ListCreateAPIView):
 
 
 class SingleMenuItemView(generics.RetrieveUpdateDestroyAPIView):
+    throttle_classes = [UserRateThrottle]
     queryset = MenuItem.objects.all()
     serializer_class = SingleMenuItemSerializer
 
@@ -88,12 +139,11 @@ class SingleMenuItemView(generics.RetrieveUpdateDestroyAPIView):
         if self.request.method == 'GET':
             return [IsAuthenticated()]
            
-        return [IsAdminUser()]
-    
-    
+        return [IsManagerOrIsAdmin()]
+     
     
 class ManagersView(generics.ListCreateAPIView):
-    
+    throttle_classes = [UserRateThrottle]
     serializer_class = GroupsSerializer
 
     def IsManagerOrIsAdmin(self):
@@ -122,7 +172,6 @@ class ManagersView(generics.ListCreateAPIView):
         
         username = self.request.data['username']
         if username:
-            # return Response({"message": f"missing {username}"}, status=status.HTTP_200_OK)
             user = get_object_or_404(User, username=username)
             managers = Group.objects.get(name="Manager")
             managers.user_set.add(user)
@@ -140,6 +189,11 @@ class ManagersView(generics.ListCreateAPIView):
 
 
         user = get_object_or_404(User, id=userId)
+        
+        if not user.groups.filter(name="Manager").exists():
+            return Response({"message": "Resource not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        
         managers = Group.objects.get(name="Manager")
         managers.user_set.remove(user)
         
@@ -147,7 +201,7 @@ class ManagersView(generics.ListCreateAPIView):
     
 
 class DeliveryCrewsView(generics.ListCreateAPIView):
-    
+    throttle_classes = [UserRateThrottle]
     serializer_class = GroupsSerializer
 
     def IsManagerOrIsAdmin(self):
@@ -202,7 +256,7 @@ class DeliveryCrewsView(generics.ListCreateAPIView):
 
     
 class OrderItemsView(generics.ListAPIView):
-    
+    throttle_classes = [UserRateThrottle]
     serializer_class = OrderItemsSerializer
 
     def IsManagerOrIsAdmin(self):
@@ -221,6 +275,27 @@ class OrderItemsView(generics.ListAPIView):
    
         if not orders:
             return Response(Order.objects.none(), status=status.HTTP_200_OK)
+        
+        order_status = request.data.get('status')
+        ordering = request.data.get('ordering')
+        per_page = request.data.get('per_page', len(orders))
+        page = request.data.get('page', 1)
+
+        if order_status:
+            try:
+                orders = orders.filter(status=order_status)
+            except ValidationError:
+                return Response({"message": "field value error"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if ordering:
+            ordering_fields = ordering.split(",")
+            orders = orders.order_by(*ordering_fields)
+
+        paginator = Paginator(orders, per_page=per_page)
+        try:
+            orders = paginator.page(number=page)
+        except EmptyPage:
+            orders = []
        
         serializer = OrdersSerializer(orders, many=True)
         
@@ -263,7 +338,7 @@ class OrderItemsView(generics.ListAPIView):
     
 
 class SingleOrderView(generics.RetrieveUpdateDestroyAPIView):
-
+    throttle_classes = [UserRateThrottle]
     # serializer_class = OrdersSerializer
     def IsManagerOrIsAdmin(self):
         return self.request.user.groups.filter(name="Manager").exists() or self.request.user.is_staff
@@ -285,7 +360,6 @@ class SingleOrderView(generics.RetrieveUpdateDestroyAPIView):
 
     def put(self, request, orderId):
 
-    
         if self.IsManagerOrIsAdmin():
 
             order = get_object_or_404(Order.objects.filter(id=orderId))
@@ -309,70 +383,39 @@ class SingleOrderView(generics.RetrieveUpdateDestroyAPIView):
 
             return Response({"message": "Status updated"}, status=status.HTTP_200_OK)
         
-
-        # Todo - this is not working
-        # customer update order
-
-        order = get_object_or_404(Order.objects.filter(id=orderId, user=request.user))
-
-        menuitems = MenuItem.objects.filter(order=order)
-
-        menuitems.delete()
-
-        menuitems = request.data.get('menuitems')  # what datatype should this accept? dict of menuitemid and quantity?
-
-        for item in menuitems:
-            order_item = OrderItem(
-                order=order,
-                menuitem=item.menuitem,
-                quantity=item.quantity,
-                unit_price=item.price,
-                price=(item.price * item.quantity)
-            )
-
-            order_item.save()
-
-        return Response({"message": "Order updated"}, status=status.HTTP_200_OK)
+        return Response({"message": "You are not authorized to perform this action"}, status=status.HTTP_401_UNAUTHORIZED)
 
 
     def patch(self, request, orderId):
+        order = get_object_or_404(Order.objects.filter(id=orderId))
         
         if self.IsManagerOrIsAdmin() or request.user.groups.filter(name="DeliveryCrew").exists():
             order_status = request.data.get('status')
 
-            if not order_status:
-                return Response({"message": "Missing fields"}, status=status.HTTP_400_BAD_REQUEST)
+            if request.user.groups.filter(name="DeliveryCrew").exists():
+                order = get_object_or_404(Order.objects.filter(id=orderId, delivery_crew=request.user))
+                
             
-            order = get_object_or_404(Order.objects.get(id=orderId))
+            if order_status:
 
-            order.status = order_status
-            order.save()
+                order.status = order_status
+                order.save()
 
-            return Response({"message": "Order updated."}, status=status.HTTP_200_OK)
+                return Response({"message": "Order updated."}, status=status.HTTP_200_OK)
         
-        # Todo - this is not working
-        # customer update order
+        
+        if self.IsManagerOrIsAdmin():
+            delivery_crew_id = request.data.get('delivery_crew')
+            delivery_crew = User.objects.get(id=delivery_crew_id)
+            
+            if delivery_crew:
 
-        order = get_object_or_404(Order.objects.filter(id=orderId, user=request.user))
-
-        menuitems = MenuItem.objects.filter(order=order)
-
-        menuitems.delete()
-
-        menuitems = request.data.get('menuitems')  # what datatype should this accept? dict of menuitemid and quantity?
-
-        for item in menuitems:
-            order_item = OrderItem(
-                order=order,
-                menuitem=item.menuitem,
-                quantity=item.quantity,
-                unit_price=item.price,
-                price=(item.price * item.quantity)
-            )
-
-            order_item.save()
-
-        return Response({"message": "Order updated"}, status=status.HTTP_200_OK)
+                order.delivery_crew = delivery_crew
+                order.save()
+                
+                return Response({"message": "Order updated."}, status=status.HTTP_200_OK)
+        
+        return Response({"message": "You are not authorized to perform this action"}, status=status.HTTP_401_UNAUTHORIZED)
 
 
     
@@ -387,6 +430,56 @@ class SingleOrderView(generics.RetrieveUpdateDestroyAPIView):
         
 
         return Response({"message": "You are not authorized to perform this action"}, status=status.HTTP_401_UNAUTHORIZED)
+    
 
+class OrderMenuitemView(generics.RetrieveUpdateDestroyAPIView):
+    
+    def get(self, request, orderId, orderitemId):
+        
+        order = get_object_or_404(Order.objects.filter(user=request.user, id=orderId))
+        
+        order_item = get_object_or_404(OrderItem.objects.filter(order=order, id=orderitemId))
+       
+        serializer = OrderMenuItemSerializer(order_item)
+       
+        
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    
+    def patch(self, request, orderId, orderitemId):
+        
+        quantity = request.data.get("quantity")
+        
+        if not quantity:
+            return Response({"message": "Fields missing"}, status=status.HTTP_400_BAD_REQUEST)
+
+             
+        order = get_object_or_404(Order.objects.filter(user=request.user, id=orderId))
+        
+        order_item = get_object_or_404(OrderItem.objects.filter(order=order, id=orderitemId))
+        
+       
+        order_item.quantity = quantity
+        order_item.price = Decimal(quantity) * order_item.unit_price
+        order_item.save()
+        
+        
+        return Response({"message": "Updated successfully"}, status=status.HTTP_200_OK)
+    
+
+    def delete(self, request, orderId, orderitemId):
+        
+        order = get_object_or_404(Order.objects.filter(user=request.user, id=orderId))
+        
+        if IsAdminUser():
+            order = get_object_or_404(Order.objects.filter(id=orderId))
+        
+        order_item = get_object_or_404(OrderItem.objects.filter(order=order, id=orderitemId))
+        
+        order_item.delete()
+        
+        return Response({"message": "Item removed from order successfully"}, status=status.HTTP_200_OK)
+        
+        
         
 

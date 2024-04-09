@@ -2,20 +2,33 @@ from rest_framework import serializers
 from rest_framework.validators import UniqueTogetherValidator, UniqueValidator
 from .models import MenuItem, Category, Cart, Order, OrderItem
 from django.contrib.auth.models import User, Group
+import bleach
 
+class CategorySerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Category
+        fields = ['id','slug', 'title']
 
 class MenuItemsSerializer(serializers.ModelSerializer):
     
-    category = serializers.StringRelatedField()
+    category = CategorySerializer(Category, read_only=True)
+    category_id = serializers.IntegerField(write_only=True)
+    title =  serializers.CharField(
+        validators = [
+            UniqueValidator(
+                queryset=MenuItem.objects.all()
+                )
+                ]
+        )
+
+    def validate_title(self, attrs):
+        return bleach.clean(attrs)
 
     class Meta:
         model = MenuItem
-        fields = ['id', 'title', 'price', 'featured', 'category']
-
-        validators = [
-            UniqueValidator('title')
-        ]
-
+        fields = ['id', 'title', 'price', 'featured', 'category', 'category_id']
+      
         extra_kwargs = {
             'price': {'min_value': 0}
         }
@@ -63,13 +76,19 @@ class OrdersSerializer(serializers.ModelSerializer):
         model = Order
         fields = ['id', 'user', 'delivery_crew', 'status', 'total', 'date', 'order_items']
 
+        def validate_status(self, attrs):
+            return bleach.clean(attrs)
+        
+        def validate_delivery_crew(self, attrs):
+            return bleach.clean(attrs)
+
         validators = [
             UniqueTogetherValidator(
                 queryset=Order.objects.all(),
                 fields=['user', 'date']
             )
         ]
-
+        
 
 class SingleMenuItemSerializer(serializers.ModelSerializer):
     
@@ -78,11 +97,14 @@ class SingleMenuItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'price', 'featured', 'category']
 
 
-class CategorySerializer(serializers.ModelSerializer):
-
+class OrderMenuItemSerializer(serializers.ModelSerializer):
+    
+    menuitem = SingleMenuItemSerializer(read_only=True)
+    
     class Meta:
-        model = Category
-        fields = ['id','slug', 'title']
+        model = OrderItem
+        fields = ['id', 'order', 'quantity', 'unit_price', 'price', 'menuitem']
+
 
 
 class GroupsSerializer(serializers.ModelSerializer):

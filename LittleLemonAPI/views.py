@@ -527,6 +527,15 @@ class OrderMenuitemView(generics.RetrieveUpdateDestroyAPIView):
         
         order_item.delete()
         
+        order_items = OrderItem.objects.filter(order=order)
+        
+        new_order_total = 0
+        for item in order_items:
+            new_order_total += item.price
+            
+        order.total = new_order_total
+        order.save()
+        
         return Response({"message": "Item removed from order successfully"}, status=status.HTTP_200_OK)
         
         

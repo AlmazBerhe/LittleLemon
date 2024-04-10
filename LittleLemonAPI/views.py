@@ -10,7 +10,9 @@ from django.shortcuts import get_object_or_404
 from datetime import datetime
 from django.core.paginator import Paginator, EmptyPage
 from rest_framework.throttling import UserRateThrottle
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+import bleach
+from django.core.exceptions import FieldError
 
 
 class IsManagerOrIsAdmin(BasePermission):
@@ -36,20 +38,48 @@ class MenuItemsView(generics.ListCreateAPIView):
         max_price = request.data.get('price_to')
         ordering = request.data.get('ordering')
         per_page = request.data.get('per_page', len(items))
+        
+        try:
+            per_page = int(per_page)
+        except ValueError:
+            return Response({"message": "Value error"}, status=status.HTTP_400_BAD_REQUEST)
+            
         page = request.data.get('page', 1)
-
+        
+        try:
+            page = int(page)
+        except ValueError:
+            return Response({"message": "Value error"}, status=status.HTTP_400_BAD_REQUEST)
+        
         if category_name:
+            category_name = bleach.clean(category_name)
             items = items.filter(category__title__icontains=category_name)
 
         if min_price:
-            items = items.filter(price__gte=min_price)
+            try:
+                min_price = Decimal(min_price)
+            except InvalidOperation:
+                return Response({"message": "Value error"}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                items = items.filter(price__gte=min_price)
 
         if max_price:
-            items = items.filter(price__lte=max_price)
+            try:
+                max_price = Decimal(max_price)
+            except InvalidOperation:
+                return Response({"message": "Value error"}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                items = items.filter(price__lte=max_price)
+            
 
         if ordering:
+            ordering = bleach.clean(ordering)
             ordering_fields = ordering.split(",")
-            items = items.order_by(*ordering_fields)
+            try:
+                items = items.order_by(*ordering_fields)
+            except FieldError:
+                return Response({"message": "Field error"}, status=status.HTTP_400_BAD_REQUEST)
+            
 
         paginator = Paginator(items, per_page=per_page)
         try:
@@ -61,12 +91,7 @@ class MenuItemsView(generics.ListCreateAPIView):
 
         return Response(serializer.data, status=status.HTTP_200_OK)   
     
-    # def patch(self, request, menuitemId):
-        
     
-    # def IsManagerOrIsAdmin(self):
-    #     return self.request.user.groups.filter(name="Manager").exists() or self.request.user.is_staff
-
     def get_permissions(self):
         if self.request.method == 'GET':
             return [IsAuthenticated()]
@@ -93,11 +118,12 @@ class CartMenuItemsView(generics.ListCreateAPIView):
             return Response({"message": "Fields missing"}, status=status.HTTP_400_BAD_REQUEST)
         
         quantity = int(self.request.data.get('quantity', 1))
+        
+        try:
+            menuItem = get_object_or_404(MenuItem.objects.filter(id=menuitemId))
+        except ValueError:
+            return Response({"message": "Value error"}, status=status.HTTP_400_BAD_REQUEST)
 
-        menuItem = MenuItem.objects.get(id=menuitemId)
-
-        if not menuItem:
-            return Response({"message": "Resource not found"}, status=status.HTTP_404_NOT_FOUND)
         
         user = self.request.user
 
@@ -279,17 +305,32 @@ class OrderItemsView(generics.ListAPIView):
         order_status = request.data.get('status')
         ordering = request.data.get('ordering')
         per_page = request.data.get('per_page', len(orders))
+        
+        try:
+            per_page = int(per_page)
+        except ValueError:
+            return Response({"message": "Value error"}, status=status.HTTP_400_BAD_REQUEST)
+        
         page = request.data.get('page', 1)
+        
+        try:
+            page = int(page)
+        except ValueError:
+            return Response({"message": "Value error"}, status=status.HTTP_400_BAD_REQUEST)
 
         if order_status:
             try:
                 orders = orders.filter(status=order_status)
             except ValidationError:
-                return Response({"message": "field value error"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"message": "Value error"}, status=status.HTTP_400_BAD_REQUEST)
 
         if ordering:
             ordering_fields = ordering.split(",")
-            orders = orders.order_by(*ordering_fields)
+            try:
+                orders = orders.order_by(*ordering_fields)
+            except FieldError:
+                return Response({"message": "Field error"}, status=status.HTTP_400_BAD_REQUEST)
+            
 
         paginator = Paginator(orders, per_page=per_page)
         try:
@@ -305,18 +346,18 @@ class OrderItemsView(generics.ListAPIView):
     def post(self, request):
 
         user = self.request.user
-        cart = Cart.objects.filter(user=user)
+        cart = get_object_or_404(Cart.objects.filter(user=user))
 
-        # Todo - this is not working
-        total = 0
-        [(total + item.price) for item in cart]
+        total_order_price = 0
+        for item in cart:
+            total_order_price += Decimal(item.price)
 
-        if not cart:
-            return Response({"message": "Resources not found"}, status=status.HTTP_404_NOT_FOUND)
+        # if not cart:
+        #     return Response({"message": "Resources not found"}, status=status.HTTP_404_NOT_FOUND)
         
         order = Order(
             user=user,
-            total=total,
+            total=total_order_price,
             date=datetime.now()
         )
 
@@ -339,7 +380,7 @@ class OrderItemsView(generics.ListAPIView):
 
 class SingleOrderView(generics.RetrieveUpdateDestroyAPIView):
     throttle_classes = [UserRateThrottle]
-    # serializer_class = OrdersSerializer
+    
     def IsManagerOrIsAdmin(self):
         return self.request.user.groups.filter(name="Manager").exists() or self.request.user.is_staff
         
@@ -350,9 +391,6 @@ class SingleOrderView(generics.RetrieveUpdateDestroyAPIView):
 
         order = get_object_or_404(Order.objects.filter(id=orderId, user=user))
 
-        # if not order:
-        #     return Response({"message": "Resources not found"}, status=status.HTTP_404_NOT_FOUND)
-        
         serialzer = OrdersSerializer(order)
 
         return Response(serialzer.data, status=status.HTTP_200_OK)
@@ -453,15 +491,26 @@ class OrderMenuitemView(generics.RetrieveUpdateDestroyAPIView):
         if not quantity:
             return Response({"message": "Fields missing"}, status=status.HTTP_400_BAD_REQUEST)
 
-             
         order = get_object_or_404(Order.objects.filter(user=request.user, id=orderId))
         
         order_item = get_object_or_404(OrderItem.objects.filter(order=order, id=orderitemId))
         
-       
-        order_item.quantity = quantity
-        order_item.price = Decimal(quantity) * order_item.unit_price
-        order_item.save()
+        try:
+            order_item.quantity = quantity
+            order_item.price = Decimal(quantity) * order_item.unit_price
+        except InvalidOperation:
+            return Response({"message": "Value error"}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            order_item.save()
+        
+        order_items = OrderItem.objects.filter(order=order)
+        
+        new_order_total = 0
+        for item in order_items:
+            new_order_total += item.price
+            
+        order.total = new_order_total
+        order.save()
         
         
         return Response({"message": "Updated successfully"}, status=status.HTTP_200_OK)

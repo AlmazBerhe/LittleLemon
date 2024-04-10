@@ -22,8 +22,8 @@ class MenuItemsSerializer(serializers.ModelSerializer):
                 ]
         )
 
-    def validate_title(self, attrs):
-        return bleach.clean(attrs)
+    def validate_title(self, value):
+        return bleach.clean(value)
 
     class Meta:
         model = MenuItem
